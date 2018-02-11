@@ -1,6 +1,7 @@
 import aiohttp
 import discord
 import os
+import sqlite3
 
 class LastBot(discord.Client):
     def init(self):
@@ -14,6 +15,8 @@ class LastBot(discord.Client):
         self.headers = {'User-Agent': self.user_agent}
         self.get_params = {'limit': 2}
         self.last_user_url = 'http://last.fm/user/{}'
+        self.db = 'db/loonssey.db'
+        self.read_unames()
 
     async def on_ready(self):
         self.init()
@@ -21,8 +24,19 @@ class LastBot(discord.Client):
         report = report.format(self.user.name, self.user.id)
         print(report)
 
+    def read_unames(self):
+        conn = sqlite3.connect(self.db)
+        for row in conn.execute('select * from unames'):
+            self.unames[row[0]] = row[1]
+        conn.close()
+
     async def on_message(self, message):
+        # https://stackoverflow.com/a/611708
+        prefixes = getattr(self, 'prefixes', False)
+        if not prefixes:
+            self.init()
         msg = message.content
+        if len(msg) == 0: return
         if msg[0] not in self.prefixes: return
         tokens = msg[1:].split()
         if len(tokens) == 0: return
@@ -38,6 +52,10 @@ class LastBot(discord.Client):
 
     async def set_uname(self, member, uname, channel):
         self.unames[member.id] = uname
+        conn = sqlite3.connect(self.db)
+        conn.execute('insert or replace into unames values(?, ?)', (member.id, uname))
+        conn.commit()
+        conn.close()
         report = 'Your last.fm username has been set to: {}'
         report = report.format(uname)
         await self.send_message(channel, report)
@@ -49,6 +67,10 @@ class LastBot(discord.Client):
             return
         uname = self.unames[member.id]
         del self.unames[member.id]
+        conn = sqlite3.connect(self.db)
+        conn.execute('delete from unames where uid=?', (member.id,))
+        conn.commit()
+        conn.close()
         report = 'Your last.fm username has been unset (it was: {})'
         report = report.format(uname)
         await self.send_message(channel, report)
@@ -81,6 +103,7 @@ class LastBot(discord.Client):
         async with aiohttp.get(url, params=self.get_params, headers=self.headers) as r:
             if r.status == 200:
                 js = await r.json()
+                print(js)
                 tracks = self.parse_json_response(js)
                 if tracks == None:
                     report = 'Error retrieving your last.fm data'
@@ -92,8 +115,13 @@ class LastBot(discord.Client):
                     # TODO: sanitize in case track names contain asterisks etc.
                     # TODO: error handling for when album etc. is not supplied
                     # TODO: error handling for if there are no recent tracks
-                    report = '\n'.join('{} - {} [{}]'.format(*t) for t in tracks)
-                    report = header + '\n' + report
+                    if len(tracks) == 3:
+                        report = ['{} - {} [{}]'.format(*t) for t in tracks]
+                        report = '{}\n__Now playing__\n{}\n__Earlier tracks__\n{}\n{}'.format(
+                            header, report[0], report[1], report[2])
+                    else:
+                        report = '\n'.join('{} - {} [{}]'.format(*t) for t in tracks)
+                        report = '{}\n__Earlier tracks__\n{}'.format(header, report)
                     await client.send_message(channel, report)
             else:
                 report = 'Error retrieving your last.fm data'
