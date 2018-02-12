@@ -103,7 +103,6 @@ class LastBot(discord.Client):
         async with aiohttp.get(url, params=self.get_params, headers=self.headers) as r:
             if r.status == 200:
                 js = await r.json()
-                print(js)
                 tracks = self.parse_json_response(js)
                 if tracks == None:
                     report = 'Error retrieving your last.fm data'
@@ -117,11 +116,11 @@ class LastBot(discord.Client):
                     # TODO: error handling for if there are no recent tracks
                     if len(tracks) == 3:
                         report = ['{} - {} [{}]'.format(*t) for t in tracks]
-                        report = '{}\n__Now playing__\n{}\n__Earlier tracks__\n{}\n{}'.format(
+                        report = '{}\n\n__Now playing__\n\n{}\n\n__Earlier tracks__\n\n{}\n{}'.format(
                             header, report[0], report[1], report[2])
                     else:
                         report = '\n'.join('{} - {} [{}]'.format(*t) for t in tracks)
-                        report = '{}\n__Earlier tracks__\n{}'.format(header, report)
+                        report = '{}\n\nNot scrobbling right now\n\n__Earlier tracks__\n\n{}'.format(header, report)
                     await client.send_message(channel, report)
             else:
                 report = 'Error retrieving your last.fm data'
