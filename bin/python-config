@@ -1,4 +1,4 @@
-#!/Users/rohan/Code/Last/bin/python
+#!/root/loonssey/bin/python
 
 import sys
 import getopt
