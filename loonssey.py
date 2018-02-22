@@ -8,7 +8,7 @@ class LastBot(discord.Client):
     def init(self):
         self.unames = {}
         self.prefixes = set(['!', '.', '_'])
-        self.cmds = set(['set', 'show', 'last', 'unset'])
+        self.cmds = set(['set', 'show', 'last', 'unset', 'collage'])
         self.last_api_root = 'http://ws.audioscrobbler.com/2.0/'
         self.last_api_key = os.environ['LAST_API_KEY']
         self.user_agent = 'last-fm (http://github.com/ajnirp/loonssey)'
@@ -24,6 +24,8 @@ class LastBot(discord.Client):
         }
         self.read_unames()
         self.refresh_emojis()
+        self.tapmusic_url = 'http://www.tapmusic.net/collage.php?user={}&type={}&size={}{}{}{}'
+        # user, type, size, caption, artistonly, playcount
 
     def build_endpoint_url(self, method, uname):
         api_call_fragment = '?method={}&user={}&api_key={}&format=json'
@@ -67,6 +69,8 @@ class LastBot(discord.Client):
             await self.display_profile(message.author, message.channel)
         elif tokens[0] == 'last' and len(tokens) == 1:
             await self.show_tracks(message.author, message.channel)
+        elif tokens[0] == 'collage':
+            await self.display_collage(message.author, message.channel, tokens[1:])
 
     async def set_uname(self, member, uname, channel):
         self.unames[member.id] = uname
@@ -107,6 +111,7 @@ class LastBot(discord.Client):
 
         def parse_js(js):
             thumb_url = self.last_logo_url
+            url = js['url']
             for _dict in js['image']:
                 if _dict['size'] == 'extralarge':
                     thumb_url = _dict['#text']
@@ -121,7 +126,7 @@ class LastBot(discord.Client):
             if data['country'] == '': del data['country']
             data['age'] = js['age']
             if data['age'] == '0': del data['age']
-            return thumb_url, data
+            return thumb_url, url, data
 
         def create_profile_embed(js):
             embed = discord.Embed(
@@ -132,7 +137,7 @@ class LastBot(discord.Client):
                 timestamp=discord.Embed.Empty,
                 footer=discord.Embed.Empty,
                 colour=self.last_colour)
-            thumb_url, data = parse_js(js['user'])
+            thumb_url, url, data = parse_js(js['user'])
             embed = embed.set_thumbnail(url=thumb_url)
             for key, val in data.items():
                 embed = embed.add_field(name=util.snake_case_to_title_case(key), value=val)
@@ -164,7 +169,8 @@ class LastBot(discord.Client):
 
     async def show_tracks(self, member, channel):
         if member.id not in self.unames:
-            report = "You haven't set your last.fm username. Use `set` to do so"
+            report = "{} You haven't set your last.fm username. Use `set` to do so"
+            report = report.format(self.emojis['b_stop'])
             await self.send_message(channel, report)
             return
         uname = self.unames[member.id]
@@ -194,6 +200,57 @@ class LastBot(discord.Client):
             else:
                 report = 'Error retrieving your last.fm data'
                 await self.send_message(channel, report)
+
+    async def display_collage(self, member, channel, tokens):
+        def form_filename(uname, data):
+            return uname + '_'.join(data) + '.jpg'
+
+        if member.id not in self.unames:
+            report = "{} You haven't set your last.fm username. Use `set` to do so"
+            report = report.format(self.emojis['b_stop'])
+            await self.send_message(channel, report)
+            return
+
+        # Parse tokens to identify the URL we will send a GET req to
+        tokens = set(tokens)
+        artistonly = '&artistonly=true' if 'artists' in tokens else ''
+        playcounts = '&playcount=true' if 'playcounts' in tokens else ''
+        captions = '&caption=true' if len(playcounts) > 0 or 'captions' in tokens else ''
+        sizes = ['3x3', '4x4', '5x5', '2x6']
+        size = '3x3'
+        for _s in sizes:
+            if _s in tokens:
+                size = _s
+                break
+        types = ['7day', '1month', '3month', '6month', '12month', 'overall']
+        type_ = '7day'
+        for _t in types:
+            if _t in tokens:
+                type_ = _t
+        uname = self.unames[member.id]
+
+        # Make the GET req, download the image and upload it to the channel
+        url = self.tapmusic_url.format(uname, type_, size, captions, artistonly, playcounts)
+        async with aiohttp.get(url, headers=self.headers) as r:
+            if r.status != 200:
+                report = '{} Error retrieving your last.fm data'
+                report = report.format(self.emojis['b_unamused'])
+                await self.send_message(channel, report)
+                return
+            data = await r.read()
+            fname = form_filename(uname, [artistonly, playcounts, captions, size, type_])
+            with open(fname, 'wb') as f:
+                f.write(data)
+            if not os.path.isfile(fname):
+                report = '{} Error retrieving your last.fm data'
+                report = report.format(self.emojis['b_unamused'])
+                await self.send_message(channel, report)
+                return
+            report = "{} Here's the {} last.fm collage for <{}>"
+            user_url = self.last_user_url.format(uname)
+            report = report.format(self.emojis['b_go'], size, user_url)
+            await client.send_file(channel, fname, filename='collage.jpg', content=report)
+            os.remove(fname)
 
 client = LastBot()
 client.run(os.environ['LAST_BOT_TOKEN'])
