@@ -6,9 +6,10 @@ import util
 
 class LastBot(discord.Client):
     def init(self):
+        # Buncha constants.
         self.unames = {}
         self.prefixes = set(['!', '.', '_'])
-        self.cmds = set(['set', 'show', 'last', 'fm', 'unset', 'collage'])
+        self.cmds = set(['set', 'show', 'last', 'fm', 'unset', 'collage', 'toptracks'])
         self.last_api_root = 'http://ws.audioscrobbler.com/2.0/'
         self.last_api_key = os.environ['LAST_API_KEY']
         self.user_agent = 'last-fm (http://github.com/ajnirp/loonssey)'
@@ -21,13 +22,28 @@ class LastBot(discord.Client):
         self.methods = {
             'get_tracks': 'user.getrecenttracks',
             'get_info': 'user.getinfo',
+            'top_tracks': 'user.gettoptracks',
         }
         self.read_unames()
         self.refresh_emojis()
         self.tapmusic_url = 'http://www.tapmusic.net/collage.php?user={}&type={}&size={}{}{}{}'
         # tapmusic_url format: user, type, size, caption, artistonly, playcount
-        self.collage_ranges = ['7day', '1month', '3month', '6month', '12month', 'overall']
+        self.time_ramges = ['7day', '1month', '3month', '6month', '12month', 'overall']
         self.collage_sizes = ['3x3', '4x4', '5x5', '2x6']
+        self.time_range_announce = {
+            '7day': 'last 7 days',
+            '1month': 'past month',
+            '3month': 'last 3 months',
+            '6month': 'last 6 months',
+            '12month': 'past year',
+            'overall': 'all time',
+        }
+        # A user-friendly way to state the time range, used for forming reports.
+
+    async def generic_failure_msg(self, channel):
+        report = '{} Error retrieving your last.fm data'
+        report = report.format(self.emojis['angerycry'])
+        await self.send_message(channel, report)
 
     def build_endpoint_url(self, method, uname):
         api_call_fragment = '?method={}&user={}&api_key={}&format=json'
@@ -79,6 +95,11 @@ class LastBot(discord.Client):
                 await self.display_collage(message.author, message.channel, tokens[1:])
             elif len(message.mentions) == 1:
                 await self.display_collage(message.mentions[0], message.channel, tokens[1:])
+        elif tokens[0] == 'toptracks':
+            if len(message.mentions) == 0:
+                await self.display_toptracks(message.author, message.channel, tokens[1:])
+            elif len(message.mentions) == 1:
+                await self.display_toptracks(message.mentions[0], message.channel, tokens[1:])
 
     async def set_uname(self, member, uname, channel):
         self.unames[member.id] = uname
@@ -92,8 +113,8 @@ class LastBot(discord.Client):
 
     async def unset_uname(self, member, channel):
         if member.id not in self.unames:
-            report = "{} You haven't set your last.fm username. Use `set` to do so"
-            report = report.format(self.emojis['b_stop'])
+            report = "{} {}, please set your last.fm username using `.set`. Example: `.set rj`"
+            report = report.format(member.name, self.emojis['b_stop'])
             await self.send_message(channel, report)
             return
         uname = self.unames[member.id]
@@ -152,33 +173,31 @@ class LastBot(discord.Client):
             return embed
 
         if member.id not in self.unames:
-            report = "{} You haven't set your last.fm username. Use `set` to do so"
-            report = report.format(self.emojis['b_stop'])
+            report = "{} {}, please set your last.fm username using `.set`. Example: `.set rj`"
+            report = report.format(member.name, self.emojis['b_stop'])
             await self.send_message(channel, report)
             return
         uname = self.unames[member.id]
         user_url = self.last_user_url.format(self.unames[member.id])
         js = await get_profile(uname)
         if js is None or 'user' not in js:
-            report = '{} Error retrieving your last.fm data'
-            report = report.format(self.emojis['b_unamused'])
-            await self.send_message(channel, report)
+            await self.generic_failure_msg(channel)
         else:
             embed = create_profile_embed(user_url, js)
             await self.send_message(channel, content=None, embed=embed)
 
-    def parse_json_response(self, js):
-        if 'recenttracks' not in js:
-            return None
-        if 'track' not in js['recenttracks']:
-            return None
-        tracks = js['recenttracks']['track']
-        return [(t['artist']['#text'], t['name'], t['album']['#text']) for t in tracks]
-
     async def show_tracks(self, member, channel):
+        def parse_js(js):
+            if 'recenttracks' not in js:
+                return None
+            if 'track' not in js['recenttracks']:
+                return None
+            tracks = js['recenttracks']['track']
+            return [(t['artist']['#text'], t['name'], t['album']['#text']) for t in tracks]
+
         if member.id not in self.unames:
-            report = "{} You haven't set your last.fm username. Use `set` to do so"
-            report = report.format(self.emojis['b_stop'])
+            report = "{} {}, please set your last.fm username using `.set`. Example: `.set rj`"
+            report = report.format(member.name, self.emojis['b_stop'])
             await self.send_message(channel, report)
             return
         uname = self.unames[member.id]
@@ -186,10 +205,9 @@ class LastBot(discord.Client):
         async with aiohttp.get(url, params=self.get_params, headers=self.headers) as r:
             if r.status == 200:
                 js = await r.json()
-                tracks = self.parse_json_response(js)
+                tracks = parse_js(js)
                 if tracks == None:
-                    report = 'Error retrieving your last.fm data'
-                    await self.send_message(channel, report)
+                    await self.generic_failure_msg(channel)
                 else:
                     footer = self.last_user_url.format(uname)
                     footer = '<{}>'.format(footer)
@@ -199,16 +217,15 @@ class LastBot(discord.Client):
                     report += '\n' + footer
                     await client.send_message(channel, report)
             else:
-                report = 'Error retrieving your last.fm data'
-                await self.send_message(channel, report)
+                await self.generic_failure_msg(channel)
 
     async def display_collage(self, member, channel, tokens):
         def form_filename(uname, data):
             return uname + '_'.join(data) + '.jpg'
 
         if member.id not in self.unames:
-            report = "{} You haven't set your last.fm username. Use `set` to do so"
-            report = report.format(self.emojis['b_stop'])
+            report = "{} {}, please set your last.fm username using `.set`. Example: `.set rj`"
+            report = report.format(member.name, self.emojis['b_stop'])
             await self.send_message(channel, report)
             return
 
@@ -223,9 +240,10 @@ class LastBot(discord.Client):
                 size = _s
                 break
         range_ = '7day'
-        for _r in self.collage_ranges:
+        for _r in self.time_ramges:
             if _r in tokens:
                 range_ = _r
+
         uname = self.unames[member.id]
 
         # Make the GET req, download the image and upload it to the channel
@@ -233,7 +251,7 @@ class LastBot(discord.Client):
         async with aiohttp.get(url, headers=self.headers) as r:
             if r.status != 200:
                 report = '{} Error retrieving your last.fm data'
-                report = report.format(self.emojis['b_unamused'])
+                report = report.format(self.emojis['angerycry'])
                 await self.send_message(channel, report)
                 return
             data = await r.read()
@@ -242,7 +260,7 @@ class LastBot(discord.Client):
                 f.write(data)
             if not os.path.isfile(fname):
                 report = '{} Error retrieving your last.fm data'
-                report = report.format(self.emojis['b_unamused'])
+                report = report.format(self.emojis['angerycry'])
                 await self.send_message(channel, report)
                 return
             report = "{} Here's the {} last.fm collage for <{}>"
@@ -250,6 +268,52 @@ class LastBot(discord.Client):
             report = report.format(self.emojis['b_go'], size, user_url)
             await client.send_file(channel, fname, filename='collage.jpg', content=report)
             os.remove(fname)
+
+    async def display_toptracks(self, member, channel, tokens):
+        def parse_js(js):
+            def truncate_name(s):
+                TRACK_NAME_LIMIT = 47
+                if len(s) < TRACK_NAME_LIMIT:
+                    return s
+                else:
+                    return s[:TRACK_NAME_LIMIT] + '...'
+            if 'toptracks' not in js: return None
+            result = [(truncate_name(t['artist']['name']), truncate_name(t['name']), t['playcount']) \
+                      for t in js['toptracks']['track']]
+            return result
+
+        if member.id not in self.unames:
+            report = "{} {}, please set your last.fm username using `.set`. Example: `.set rj`"
+            report = report.format(member.name, self.emojis['b_stop'])
+            await sel
+
+        range_ = '7day'
+        for _r in self.time_ramges:
+            if _r in tokens:
+                range_ = _r
+                break
+
+        uname = self.unames[member.id]
+        user_url = self.last_user_url.format(self.unames[member.id]) + '/library/tracks'
+
+        url = self.build_endpoint_url('top_tracks', uname) + '&limit=10&period={}'.format(range_)
+
+        async with aiohttp.get(url, params=self.get_params, headers=self.headers) as r:
+            if r.status == 200:
+                js = await r.json()
+                data = parse_js(js)
+                if data == None:
+                    await self.generic_failure_msg(channel)
+                else:
+                    header = 'Top tracks for <{}> ({})\n\n'
+                    header = header.format(user_url, self.time_range_announce[range_])
+                    report_lines = []
+                    report = '\n'.join('{}. {} - {} [{} plays]'.\
+                        format(i+1, *datum) for i, datum in enumerate(data))
+                    report = header + report
+                    await client.send_message(channel, report)
+            else:
+                await self.generic_failure_msg(channel)
 
 client = LastBot()
 client.run(os.environ['LAST_BOT_TOKEN'])
