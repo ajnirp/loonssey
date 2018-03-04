@@ -90,10 +90,10 @@ class LastBot(discord.Client):
         elif tokens[0] == 'show' and len(tokens) == 1:
             await self.display_profile(message.author, message.channel)
         elif tokens[0] in ['fm', 'last']:
-            if len(message.mentions) == 0:
-                await self.show_tracks(message.author, message.channel)
-            elif len(message.mentions) == 1:
-                await self.show_tracks(message.mentions[0], message.channel)
+            target = message.author
+            if len(message.mentions) == 1:
+                target = message.mentions[0]
+            await self.display_tracks(target, message.channel)
         elif tokens[0] == 'collage':
             target = message.author
             if len(message.mentions) == 1:
@@ -191,7 +191,7 @@ class LastBot(discord.Client):
             embed = create_profile_embed(user_url, js)
             await self.send_message(channel, content=None, embed=embed)
 
-    async def show_tracks(self, member, channel):
+    async def display_tracks(self, member, channel):
         def parse_js(js):
             if 'recenttracks' not in js:
                 return None
