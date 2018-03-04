@@ -8,7 +8,7 @@ class LastBot(discord.Client):
     def init(self):
         self.unames = {}
         self.prefixes = set(['!', '.', '_'])
-        self.cmds = set(['set', 'show', 'last', 'unset', 'collage'])
+        self.cmds = set(['set', 'show', 'fm', 'unset', 'collage'])
         self.last_api_root = 'http://ws.audioscrobbler.com/2.0/'
         self.last_api_key = os.environ['LAST_API_KEY']
         self.user_agent = 'last-fm (http://github.com/ajnirp/loonssey)'
@@ -25,7 +25,9 @@ class LastBot(discord.Client):
         self.read_unames()
         self.refresh_emojis()
         self.tapmusic_url = 'http://www.tapmusic.net/collage.php?user={}&type={}&size={}{}{}{}'
-        # user, type, size, caption, artistonly, playcount
+        # tapmusic_url format: user, type, size, caption, artistonly, playcount
+        self.collage_ranges = ['7day', '1month', '3month', '6month', '12month', 'overall']
+        self.collage_sizes = ['3x3', '4x4', '5x5', '2x6']
 
     def build_endpoint_url(self, method, uname):
         api_call_fragment = '?method={}&user={}&api_key={}&format=json'
@@ -67,10 +69,16 @@ class LastBot(discord.Client):
             await self.unset_uname(message.author, message.channel)
         elif tokens[0] == 'show' and len(tokens) == 1:
             await self.display_profile(message.author, message.channel)
-        elif tokens[0] == 'last' and len(tokens) == 1:
-            await self.show_tracks(message.author, message.channel)
+        elif tokens[0] == 'fm':
+            if len(message.mentions) == 0:
+                await self.show_tracks(message.author, message.channel)
+            elif len(message.mentions) == 1:
+                await self.show_tracks(message.mentions[0], message.channel)
         elif tokens[0] == 'collage':
-            await self.display_collage(message.author, message.channel, tokens[1:])
+            if len(message.mentions) == 0:
+                await self.display_collage(message.author, message.channel, tokens[1:])
+            elif len(message.mentions) == 1:
+                await self.display_collage(message.mentions[0], message.channel, tokens[1:])
 
     async def set_uname(self, member, uname, channel):
         self.unames[member.id] = uname
@@ -128,12 +136,12 @@ class LastBot(discord.Client):
             if data['age'] == '0': del data['age']
             return thumb_url, url, data
 
-        def create_profile_embed(js):
+        def create_profile_embed(user_url, js):
             embed = discord.Embed(
                 title=uname,
                 type='rich',
                 description='last.fm profile',
-                url=discord.Embed.Empty,
+                url=user_url,
                 timestamp=discord.Embed.Empty,
                 footer=discord.Embed.Empty,
                 colour=self.last_colour)
@@ -149,14 +157,14 @@ class LastBot(discord.Client):
             await self.send_message(channel, report)
             return
         uname = self.unames[member.id]
-        url = self.last_user_url.format(self.unames[member.id])
+        user_url = self.last_user_url.format(self.unames[member.id])
         js = await get_profile(uname)
         if js is None or 'user' not in js:
             report = '{} Error retrieving your last.fm data'
             report = report.format(self.emojis['b_unamused'])
             await self.send_message(channel, report)
         else:
-            embed = create_profile_embed(js)
+            embed = create_profile_embed(user_url, js)
             await self.send_message(channel, content=None, embed=embed)
 
     def parse_json_response(self, js):
@@ -183,19 +191,12 @@ class LastBot(discord.Client):
                     report = 'Error retrieving your last.fm data'
                     await self.send_message(channel, report)
                 else:
-                    header = self.last_user_url.format(uname)
-                    header = '<{}>'.format(header)
-                    # TODO: truncate in case track names exceed 2000 chars
-                    # TODO: sanitize in case track names contain asterisks etc.
-                    # TODO: error handling for when album etc. is not supplied
-                    # TODO: error handling for if there are no recent tracks
-                    if len(tracks) == 3:
-                        report = ['{} - {} [{}]'.format(*t) for t in tracks]
-                        report = '{}\n\n__Now playing__\n\n{}\n\n__Earlier tracks__\n\n{}\n{}'.format(
-                            header, report[0], report[1], report[2])
-                    else:
-                        report = '\n'.join('{} - {} [{}]'.format(*t) for t in tracks)
-                        report = '{}\n\nNot scrobbling right now\n\n__Earlier tracks__\n\n{}'.format(header, report)
+                    footer = self.last_user_url.format(uname)
+                    footer = '<{}>'.format(footer)
+                    tracks = tracks[:2]
+                    captions = ['Current', 'Previous']
+                    report = '\n'.join('**{}**: {} - {} [{}]'.format(captions[i], *t) for i, t in enumerate(tracks))
+                    report += '\n' + footer
                     await client.send_message(channel, report)
             else:
                 report = 'Error retrieving your last.fm data'
@@ -216,21 +217,19 @@ class LastBot(discord.Client):
         artistonly = '&artistonly=true' if 'artists' in tokens else ''
         playcounts = '&playcount=true' if 'playcounts' in tokens else ''
         captions = '&caption=true' if len(playcounts) > 0 or 'captions' in tokens else ''
-        sizes = ['3x3', '4x4', '5x5', '2x6']
         size = '3x3'
-        for _s in sizes:
+        for _s in self.collage_sizes:
             if _s in tokens:
                 size = _s
                 break
-        types = ['7day', '1month', '3month', '6month', '12month', 'overall']
-        type_ = '7day'
-        for _t in types:
-            if _t in tokens:
-                type_ = _t
+        range_ = '7day'
+        for _r in self.collage_ranges:
+            if _r in tokens:
+                range_ = _r
         uname = self.unames[member.id]
 
         # Make the GET req, download the image and upload it to the channel
-        url = self.tapmusic_url.format(uname, type_, size, captions, artistonly, playcounts)
+        url = self.tapmusic_url.format(uname, range_, size, captions, artistonly, playcounts)
         async with aiohttp.get(url, headers=self.headers) as r:
             if r.status != 200:
                 report = '{} Error retrieving your last.fm data'
@@ -238,7 +237,7 @@ class LastBot(discord.Client):
                 await self.send_message(channel, report)
                 return
             data = await r.read()
-            fname = form_filename(uname, [artistonly, playcounts, captions, size, type_])
+            fname = form_filename(uname, [artistonly, playcounts, captions, size, range_])
             with open(fname, 'wb') as f:
                 f.write(data)
             if not os.path.isfile(fname):
