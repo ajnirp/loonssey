@@ -9,7 +9,8 @@ class LastBot(discord.Client):
         # Buncha constants.
         self.unames = {}
         self.prefixes = set(['!', '.', '_'])
-        self.cmds = set(['set', 'show', 'last', 'fm', 'unset', 'collage', 'toptracks'])
+        self.cmds = set(['set', 'show', 'last', 'fm', 'unset', 'collage', \
+                         'toptracks', 'topalbums', 'topartists'])
         self.last_api_root = 'http://ws.audioscrobbler.com/2.0/'
         self.last_api_key = os.environ['LAST_API_KEY']
         self.user_agent = 'last-fm (http://github.com/ajnirp/loonssey)'
@@ -19,17 +20,13 @@ class LastBot(discord.Client):
         self.last_logo_url = 'https://i.imgur.com/04GyRqO.jpg'
         self.db = 'db/loonssey.db'
         self.last_colour = 0xd51007
-        self.methods = {
-            'get_tracks': 'user.getrecenttracks',
-            'get_info': 'user.getinfo',
-            'top_tracks': 'user.gettoptracks',
-        }
         self.read_unames()
         self.refresh_emojis()
-        self.tapmusic_url = 'http://www.tapmusic.net/collage.php?user={}&type={}&size={}{}{}{}'
         # tapmusic_url format: user, type, size, caption, artistonly, playcount
+        self.tapmusic_url = 'http://www.tapmusic.net/collage.php?user={}&type={}&size={}{}{}{}'
         self.time_ramges = ['7day', '1month', '3month', '6month', '12month', 'overall']
         self.collage_sizes = ['3x3', '4x4', '5x5', '2x6']
+        # A user-friendly way to state the time range, used for forming reports.
         self.time_range_announce = {
             '7day': 'last 7 days',
             '1month': 'past month',
@@ -38,7 +35,14 @@ class LastBot(discord.Client):
             '12month': 'past year',
             'overall': 'all time',
         }
-        # A user-friendly way to state the time range, used for forming reports.
+        self.last_date_presets = {
+            '7day': 'LAST_7_DAYS',
+            '1month': 'LAST_30_DAYS',
+            '3month': 'LAST_90_DAYS',
+            '6month': 'LAST_180_DAYS',
+            '12month': 'LAST_365_DAYS',
+            'overall': 'ALL',
+        }
 
     async def generic_failure_msg(self, channel):
         report = '{} Error retrieving your last.fm data'
@@ -48,7 +52,7 @@ class LastBot(discord.Client):
     def build_endpoint_url(self, method, uname):
         api_call_fragment = '?method={}&user={}&api_key={}&format=json'
         return self.last_api_root + api_call_fragment.format(
-            self.methods[method], uname, self.last_api_key)
+            method, uname, self.last_api_key)
 
     def refresh_emojis(self):
         self.emojis = {}
@@ -91,15 +95,16 @@ class LastBot(discord.Client):
             elif len(message.mentions) == 1:
                 await self.show_tracks(message.mentions[0], message.channel)
         elif tokens[0] == 'collage':
-            if len(message.mentions) == 0:
-                await self.display_collage(message.author, message.channel, tokens[1:])
-            elif len(message.mentions) == 1:
-                await self.display_collage(message.mentions[0], message.channel, tokens[1:])
-        elif tokens[0] == 'toptracks':
-            if len(message.mentions) == 0:
-                await self.display_toptracks(message.author, message.channel, tokens[1:])
-            elif len(message.mentions) == 1:
-                await self.display_toptracks(message.mentions[0], message.channel, tokens[1:])
+            target = message.author
+            if len(message.mentions) == 1:
+                target = message.mentions[0]
+            await self.display_collage(target, message.channel, tokens[1:])
+        elif tokens[0] in ['toptracks', 'topalbums', 'topartists']:
+            target = message.author
+            type_ = tokens[0][3:]
+            if len(message.mentions) == 1:
+                target = message.mentions[0]
+            await self.display_top(type_, target, message.channel, tokens[1:])
 
     async def set_uname(self, member, uname, channel):
         self.unames[member.id] = uname
@@ -130,7 +135,7 @@ class LastBot(discord.Client):
     async def display_profile(self, member, channel):
 
         async def get_profile(uname):
-            url = self.build_endpoint_url('get_info', uname)
+            url = self.build_endpoint_url('user.getinfo', uname)
             async with aiohttp.get(url, headers=self.headers) as r:
                 if r.status == 200:
                     js = await r.json()
@@ -201,7 +206,7 @@ class LastBot(discord.Client):
             await self.send_message(channel, report)
             return
         uname = self.unames[member.id]
-        url = self.build_endpoint_url('get_tracks', uname)
+        url = self.build_endpoint_url('user.getrecenttracks', uname)
         async with aiohttp.get(url, params=self.get_params, headers=self.headers) as r:
             if r.status == 200:
                 js = await r.json()
@@ -269,18 +274,25 @@ class LastBot(discord.Client):
             await client.send_file(channel, fname, filename='collage.jpg', content=report)
             os.remove(fname)
 
-    async def display_toptracks(self, member, channel, tokens):
-        def parse_js(js):
-            def truncate_name(s):
-                TRACK_NAME_LIMIT = 47
-                if len(s) < TRACK_NAME_LIMIT:
-                    return s
-                else:
-                    return s[:TRACK_NAME_LIMIT] + '...'
-            if 'toptracks' not in js: return None
-            result = [(truncate_name(t['artist']['name']), truncate_name(t['name']), t['playcount']) \
-                      for t in js['toptracks']['track']]
+    # Handles top tracks, albums, and artists. A three-in-one method.
+    async def display_top(self, type_, member, channel, tokens):
+        def parse_js_helper(t, type_):
+            if type_ in ['albums', 'tracks']:
+                return (util.truncate(t['artist']['name']), util.truncate(t['name']), t['playcount'])
+            elif type_ == 'artists':
+                return (util.truncate(t['name']), t['playcount'])
+
+        def parse_js(js, type_):
+            result_type = 'top' + type_
+            if result_type not in js: return None
+            result = [parse_js_helper(t, type_) for t in js[result_type][type_[:-1]]]
             return result
+
+        def report_format(type_):
+            if type_ in ['albums', 'tracks']:
+                return '{}. {} - {} [{} plays]'
+            elif type_ == 'artists':
+                return '{}. {} [{} plays]'
 
         if member.id not in self.unames:
             report = "{} {}, please set your last.fm username using `.set`. Example: `.set rj`"
@@ -294,23 +306,26 @@ class LastBot(discord.Client):
                 break
 
         uname = self.unames[member.id]
-        user_url = self.last_user_url.format(self.unames[member.id]) + '/library/tracks'
+        date_preset = self.last_date_presets[range_]
+        user_url = self.last_user_url.format(self.unames[member.id]) + \
+                   '/library/{}?date_preset={}'.format(type_, date_preset)
 
-        url = self.build_endpoint_url('top_tracks', uname) + '&limit=10&period={}'.format(range_)
+        method = 'user.gettop{}'.format(type_)
+        url = self.build_endpoint_url(method, uname) + '&limit=10&period={}'.format(range_)
 
         async with aiohttp.get(url, params=self.get_params, headers=self.headers) as r:
             if r.status == 200:
                 js = await r.json()
-                data = parse_js(js)
+                data = parse_js(js, type_)
                 if data == None:
                     await self.generic_failure_msg(channel)
                 else:
-                    header = 'Top tracks for <{}> ({})\n\n'
-                    header = header.format(user_url, self.time_range_announce[range_])
-                    report_lines = []
-                    report = '\n'.join('{}. {} - {} [{} plays]'.\
+                    header = 'Top {} for **{}** ({})\n'
+                    header = header.format(type_, uname, self.time_range_announce[range_])
+                    report = '\n'.join(report_format (type_).\
                         format(i+1, *datum) for i, datum in enumerate(data))
-                    report = header + report
+                    footer = '\n<{}>'.format(user_url)
+                    report = header + report + footer
                     await client.send_message(channel, report)
             else:
                 await self.generic_failure_msg(channel)
