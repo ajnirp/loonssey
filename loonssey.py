@@ -8,7 +8,7 @@ class LastBot(discord.Client):
     def init(self):
         self.unames = {}
         self.prefixes = set(['!', '.', '_'])
-        self.cmds = set(['set', 'show', 'fm', 'unset', 'collage'])
+        self.cmds = set(['set', 'show', 'last', 'fm', 'unset', 'collage'])
         self.last_api_root = 'http://ws.audioscrobbler.com/2.0/'
         self.last_api_key = os.environ['LAST_API_KEY']
         self.user_agent = 'last-fm (http://github.com/ajnirp/loonssey)'
@@ -69,7 +69,7 @@ class LastBot(discord.Client):
             await self.unset_uname(message.author, message.channel)
         elif tokens[0] == 'show' and len(tokens) == 1:
             await self.display_profile(message.author, message.channel)
-        elif tokens[0] == 'fm':
+        elif tokens[0] in ['fm', 'last']:
             if len(message.mentions) == 0:
                 await self.show_tracks(message.author, message.channel)
             elif len(message.mentions) == 1:
