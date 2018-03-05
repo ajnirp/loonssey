@@ -2,6 +2,7 @@ import aiohttp
 import discord
 import os
 import sqlite3
+import urllib.parse
 import util
 
 class LastBot(discord.Client):
@@ -9,8 +10,8 @@ class LastBot(discord.Client):
         # Buncha constants.
         self.unames = {}
         self.prefixes = set(['!', '.', '_'])
-        self.cmds = set(['set', 'show', 'last', 'fm', 'unset', 'collage', \
-                         'toptracks', 'topalbums', 'topartists'])
+        self.cmds = set(['set', 'show', 'last', 'fm', 'fmyt', 'unset', \
+                         'collage', 'toptracks', 'topalbums', 'topartists'])
         self.last_api_root = 'http://ws.audioscrobbler.com/2.0/'
         self.last_api_key = os.environ['LAST_API_KEY']
         self.user_agent = 'last-fm (http://github.com/ajnirp/loonssey)'
@@ -43,16 +44,28 @@ class LastBot(discord.Client):
             '12month': 'LAST_365_DAYS',
             'overall': 'ALL',
         }
+        self.yt_api_key = os.environ['YOUTUBE_API_KEY']
+        self.yt_search_url = 'https://www.googleapis.com/youtube/v3/search?part=snippet&key={}&maxResults=1&q={}'
 
-    async def generic_failure_msg(self, channel):
+    async def generic_lfm_failure_msg(self, channel):
         report = '{} Error retrieving your last.fm data'
         report = report.format(self.emojis['angerycry'])
         await self.send_message(channel, report)
 
-    def build_endpoint_url(self, method, uname):
+    async def generic_yt_failure_msg(self, channel):
+        report = '{} Error searching YouTube'
+        report = report.format(self.emojis['angerycry'])
+        await self.send_message(channel, report)
+
+    def build_last_endpoint_url(self, method, uname):
         api_call_fragment = '?method={}&user={}&api_key={}&format=json'
         return self.last_api_root + api_call_fragment.format(
             method, uname, self.last_api_key)
+
+    def build_yt_endpoint_url(self, query):
+        quoted_query = urllib.parse.quote_plus(query)
+        url = self.yt_search_url.format(self.yt_api_key, quoted_query)
+        return url
 
     def refresh_emojis(self):
         self.emojis = {}
@@ -105,6 +118,11 @@ class LastBot(discord.Client):
             if len(message.mentions) == 1:
                 target = message.mentions[0]
             await self.display_top(type_, target, message.channel, tokens[1:])
+        elif tokens[0] == 'fmyt':
+            target = message.author
+            if len(message.mentions) == 1:
+                target = message.mentions[0]
+            await self.display_fmyt(target, message.channel)
 
     async def set_uname(self, member, uname, channel):
         self.unames[member.id] = uname
@@ -135,7 +153,7 @@ class LastBot(discord.Client):
     async def display_profile(self, member, channel):
 
         async def get_profile(uname):
-            url = self.build_endpoint_url('user.getinfo', uname)
+            url = self.build_last_endpoint_url('user.getinfo', uname)
             async with aiohttp.get(url, headers=self.headers) as r:
                 if r.status == 200:
                     js = await r.json()
@@ -186,7 +204,7 @@ class LastBot(discord.Client):
         user_url = self.last_user_url.format(self.unames[member.id])
         js = await get_profile(uname)
         if js is None or 'user' not in js:
-            await self.generic_failure_msg(channel)
+            await self.generic_lfm_failure_msg(channel)
         else:
             embed = create_profile_embed(user_url, js)
             await self.send_message(channel, content=None, embed=embed)
@@ -206,13 +224,13 @@ class LastBot(discord.Client):
             await self.send_message(channel, report)
             return
         uname = self.unames[member.id]
-        url = self.build_endpoint_url('user.getrecenttracks', uname)
+        url = self.build_last_endpoint_url('user.getrecenttracks', uname)
         async with aiohttp.get(url, params=self.get_params, headers=self.headers) as r:
             if r.status == 200:
                 js = await r.json()
                 tracks = parse_js(js)
                 if tracks == None:
-                    await self.generic_failure_msg(channel)
+                    await self.generic_lfm_failure_msg(channel)
                 else:
                     footer = self.last_user_url.format(uname)
                     footer = '<{}>'.format(footer)
@@ -222,7 +240,7 @@ class LastBot(discord.Client):
                     report += '\n' + footer
                     await client.send_message(channel, report)
             else:
-                await self.generic_failure_msg(channel)
+                await self.generic_lfm_failure_msg(channel)
 
     async def display_collage(self, member, channel, tokens):
         def form_filename(uname, data):
@@ -311,14 +329,14 @@ class LastBot(discord.Client):
                    '/library/{}?date_preset={}'.format(type_, date_preset)
 
         method = 'user.gettop{}'.format(type_)
-        url = self.build_endpoint_url(method, uname) + '&limit=10&period={}'.format(range_)
+        url = self.build_last_endpoint_url(method, uname) + '&limit=10&period={}'.format(range_)
 
         async with aiohttp.get(url, params=self.get_params, headers=self.headers) as r:
             if r.status == 200:
                 js = await r.json()
                 data = parse_js(js, type_)
                 if data == None:
-                    await self.generic_failure_msg(channel)
+                    await self.generic_lfm_failure_msg(channel)
                 else:
                     header = 'Top {} for **{}** ({})\n'
                     header = header.format(type_, uname, self.time_range_announce[range_])
@@ -328,7 +346,58 @@ class LastBot(discord.Client):
                     report = header + report + footer
                     await client.send_message(channel, report)
             else:
-                await self.generic_failure_msg(channel)
+                await self.generic_lfm_failure_msg(channel)
+
+    async def display_fmyt(self, member, channel):
+        def parse_js(js):
+            if 'recenttracks' not in js:
+                return None
+            if 'track' not in js['recenttracks']:
+                return None
+            tracks = js['recenttracks']['track']
+            return [(t['artist']['#text'], t['name']) for t in tracks]
+
+        if member.id not in self.unames:
+            report = "{} {}, please set your last.fm username using `.set`. Example: `.set rj`"
+            report = report.format(member.name, self.emojis['b_stop'])
+            await self.send_message(channel, report)
+            return
+        uname = self.unames[member.id]
+        lfm_url = self.build_last_endpoint_url('user.getrecenttracks', uname)
+        async with aiohttp.get(lfm_url, params=self.get_params, headers=self.headers) as r1:
+            if r1.status != 200:
+                await self.generic_lfm_failure_msg(channel)
+                return
+            lfm_js = await r1.json()
+            track = parse_js(lfm_js)
+            if track == None:
+                await self.generic_lfm_failure_msg(channel)
+                return
+            if len(track) == 0:
+                report = 'No recent track found for **{}**'
+                report = report.format(uname)
+                await self.send_message(channel, report)
+                return
+            query = '{} - {}'.format(*track[0])
+            yt_url = self.build_yt_endpoint_url(query)
+            async with aiohttp.get(yt_url, headers=self.headers) as r2:
+                if r2.status != 200:
+                    await self.generic_yt_failure_msg(channel)
+                    return
+                yt_js = await r2.json()
+                if 'items' not in yt_js:
+                    await self.generic_yt_failure_msg(channel)
+                    return
+                results = yt_js['items']
+                if len(results) == 0:
+                    await self.generic_yt_failure_msg(channel)
+                    return
+                result = results[0]
+                video_id = result['id']['videoId']
+                video_url = 'https://youtu.be/{}'.format(video_id)
+                video_title = result['snippet']['title']
+                report = '{}\n{}'.format(video_title, video_url)
+                await self.send_message(channel, report)
 
 client = LastBot()
 client.run(os.environ['LAST_BOT_TOKEN'])
