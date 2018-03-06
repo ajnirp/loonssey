@@ -86,6 +86,12 @@ class LastBot(discord.Client):
         conn.close()
 
     async def on_message(self, message):
+        ignore = False
+        for role in message.author.roles:
+            if role.id == '220160015380512768' or role.name == 'botless':
+                ignore = True
+        if ignore:
+            return
         # https://stackoverflow.com/a/611708
         prefixes = getattr(self, 'prefixes', False)
         if not prefixes:
