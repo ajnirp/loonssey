@@ -14,7 +14,7 @@ class LastBot(discord.Client):
                          'collage', 'toptracks', 'topalbums', 'topartists'])
         self.last_api_root = 'http://ws.audioscrobbler.com/2.0/'
         self.last_api_key = os.environ['LAST_API_KEY']
-        self.user_agent = 'last-fm (http://github.com/ajnirp/loonssey)'
+        self.user_agent = 'LoonsseyBot (http://github.com/ajnirp/loonssey)'
         self.headers = {'User-Agent': self.user_agent}
         self.get_params = {'limit': 2}
         self.last_user_url = 'http://last.fm/user/{}'
