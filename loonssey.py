@@ -86,12 +86,6 @@ class LastBot(discord.Client):
         conn.close()
 
     async def on_message(self, message):
-        ignore = False
-        for role in message.author.roles:
-            if role.id == '220160015380512768' or role.name == 'botless':
-                ignore = True
-        if ignore:
-            return
         # https://stackoverflow.com/a/611708
         prefixes = getattr(self, 'prefixes', False)
         if not prefixes:
@@ -160,12 +154,13 @@ class LastBot(discord.Client):
 
         async def get_profile(uname):
             url = self.build_last_endpoint_url('user.getinfo', uname)
-            async with aiohttp.get(url, headers=self.headers) as r:
-                if r.status == 200:
-                    js = await r.json()
-                    return js
-                else:
-                    return None
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers) as r:
+                    if r.status == 200:
+                        js = await r.json()
+                        return js
+                    else:
+                        return None
 
         def parse_js(js):
             thumb_url = self.last_logo_url
@@ -231,22 +226,23 @@ class LastBot(discord.Client):
             return
         uname = self.unames[member.id]
         url = self.build_last_endpoint_url('user.getrecenttracks', uname)
-        async with aiohttp.get(url, params=self.get_params, headers=self.headers) as r:
-            if r.status == 200:
-                js = await r.json()
-                tracks = parse_js(js)
-                if tracks == None:
-                    await self.generic_lfm_failure_msg(channel)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=self.get_params, headers=self.headers) as r:
+                if r.status == 200:
+                    js = await r.json()
+                    tracks = parse_js(js)
+                    if tracks == None:
+                        await self.generic_lfm_failure_msg(channel)
+                    else:
+                        footer = self.last_user_url.format(uname)
+                        footer = '<{}>'.format(footer)
+                        tracks = tracks[:2]
+                        captions = ['Current', 'Previous']
+                        report = '\n'.join('**{}**: {} - {} [{}]'.format(captions[i], *t) for i, t in enumerate(tracks))
+                        report += '\n' + footer
+                        await client.send_message(channel, report)
                 else:
-                    footer = self.last_user_url.format(uname)
-                    footer = '<{}>'.format(footer)
-                    tracks = tracks[:2]
-                    captions = ['Current', 'Previous']
-                    report = '\n'.join('**{}**: {} - {} [{}]'.format(captions[i], *t) for i, t in enumerate(tracks))
-                    report += '\n' + footer
-                    await client.send_message(channel, report)
-            else:
-                await self.generic_lfm_failure_msg(channel)
+                    await self.generic_lfm_failure_msg(channel)
 
     async def display_collage(self, member, channel, tokens):
         def form_filename(uname, data):
@@ -277,26 +273,27 @@ class LastBot(discord.Client):
 
         # Make the GET req, download the image and upload it to the channel
         url = self.tapmusic_url.format(uname, range_, size, captions, artistonly, playcounts)
-        async with aiohttp.get(url, headers=self.headers) as r:
-            if r.status != 200:
-                report = '{} Error retrieving your last.fm data'
-                report = report.format(self.emojis['angerycry'])
-                await self.send_message(channel, report)
-                return
-            data = await r.read()
-            fname = form_filename(uname, [artistonly, playcounts, captions, size, range_])
-            with open(fname, 'wb') as f:
-                f.write(data)
-            if not os.path.isfile(fname):
-                report = '{} Error retrieving your last.fm data'
-                report = report.format(self.emojis['angerycry'])
-                await self.send_message(channel, report)
-                return
-            report = "{} Here's the {} last.fm collage for <{}>"
-            user_url = self.last_user_url.format(uname)
-            report = report.format(self.emojis['b_go'], size, user_url)
-            await client.send_file(channel, fname, filename='collage.jpg', content=report)
-            os.remove(fname)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=self.headers) as r:
+                if r.status != 200:
+                    report = '{} Error retrieving your last.fm data'
+                    report = report.format(self.emojis['angerycry'])
+                    await self.send_message(channel, report)
+                    return
+                data = await r.read()
+                fname = form_filename(uname, [artistonly, playcounts, captions, size, range_])
+                with open(fname, 'wb') as f:
+                    f.write(data)
+                if not os.path.isfile(fname):
+                    report = '{} Error retrieving your last.fm data'
+                    report = report.format(self.emojis['angerycry'])
+                    await self.send_message(channel, report)
+                    return
+                report = "{} Here's the {} last.fm collage for <{}>"
+                user_url = self.last_user_url.format(uname)
+                report = report.format(self.emojis['b_go'], size, user_url)
+                await client.send_file(channel, fname, filename='collage.jpg', content=report)
+                os.remove(fname)
 
     # Handles top tracks, albums, and artists. A three-in-one method.
     async def display_top(self, type_, member, channel, tokens):
@@ -337,22 +334,23 @@ class LastBot(discord.Client):
         method = 'user.gettop{}'.format(type_)
         url = self.build_last_endpoint_url(method, uname) + '&limit=10&period={}'.format(range_)
 
-        async with aiohttp.get(url, params=self.get_params, headers=self.headers) as r:
-            if r.status == 200:
-                js = await r.json()
-                data = parse_js(js, type_)
-                if data == None:
-                    await self.generic_lfm_failure_msg(channel)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=self.get_params, headers=self.headers) as r:
+                if r.status == 200:
+                    js = await r.json()
+                    data = parse_js(js, type_)
+                    if data == None:
+                        await self.generic_lfm_failure_msg(channel)
+                    else:
+                        header = 'Top {} for **{}** ({})\n'
+                        header = header.format(type_, uname, self.time_range_announce[range_])
+                        report = '\n'.join(report_format (type_).\
+                            format(i+1, *datum) for i, datum in enumerate(data))
+                        footer = '\n<{}>'.format(user_url)
+                        report = header + report + footer
+                        await client.send_message(channel, report)
                 else:
-                    header = 'Top {} for **{}** ({})\n'
-                    header = header.format(type_, uname, self.time_range_announce[range_])
-                    report = '\n'.join(report_format (type_).\
-                        format(i+1, *datum) for i, datum in enumerate(data))
-                    footer = '\n<{}>'.format(user_url)
-                    report = header + report + footer
-                    await client.send_message(channel, report)
-            else:
-                await self.generic_lfm_failure_msg(channel)
+                    await self.generic_lfm_failure_msg(channel)
 
     async def display_fmyt(self, member, channel):
         def parse_js(js):
@@ -370,40 +368,41 @@ class LastBot(discord.Client):
             return
         uname = self.unames[member.id]
         lfm_url = self.build_last_endpoint_url('user.getrecenttracks', uname)
-        async with aiohttp.get(lfm_url, params=self.get_params, headers=self.headers) as r1:
-            if r1.status != 200:
-                await self.generic_lfm_failure_msg(channel)
-                return
-            lfm_js = await r1.json()
-            track = parse_js(lfm_js)
-            if track == None:
-                await self.generic_lfm_failure_msg(channel)
-                return
-            if len(track) == 0:
-                report = 'No recent track found for **{}**'
-                report = report.format(uname)
-                await self.send_message(channel, report)
-                return
-            query = '{} - {}'.format(*track[0])
-            yt_url = self.build_yt_endpoint_url(query)
-            async with aiohttp.get(yt_url, headers=self.headers) as r2:
-                if r2.status != 200:
-                    await self.generic_yt_failure_msg(channel)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(lfm_url, params=self.get_params, headers=self.headers) as r1:
+                if r1.status != 200:
+                    await self.generic_lfm_failure_msg(channel)
                     return
-                yt_js = await r2.json()
-                if 'items' not in yt_js:
-                    await self.generic_yt_failure_msg(channel)
+                lfm_js = await r1.json()
+                track = parse_js(lfm_js)
+                if track == None:
+                    await self.generic_lfm_failure_msg(channel)
                     return
-                results = yt_js['items']
-                if len(results) == 0:
-                    await self.generic_yt_failure_msg(channel)
+                if len(track) == 0:
+                    report = 'No recent track found for **{}**'
+                    report = report.format(uname)
+                    await self.send_message(channel, report)
                     return
-                result = results[0]
-                video_id = result['id']['videoId']
-                video_url = 'https://youtu.be/{}'.format(video_id)
-                video_title = result['snippet']['title']
-                report = '{}\n{}'.format(video_title, video_url)
-                await self.send_message(channel, report)
+                query = '{} - {}'.format(*track[0])
+                yt_url = self.build_yt_endpoint_url(query)
+                async with session.get(yt_url, headers=self.headers) as r2:
+                    if r2.status != 200:
+                        await self.generic_yt_failure_msg(channel)
+                        return
+                    yt_js = await r2.json()
+                    if 'items' not in yt_js:
+                        await self.generic_yt_failure_msg(channel)
+                        return
+                    results = yt_js['items']
+                    if len(results) == 0:
+                        await self.generic_yt_failure_msg(channel)
+                        return
+                    result = results[0]
+                    video_id = result['id']['videoId']
+                    video_url = 'https://youtu.be/{}'.format(video_id)
+                    video_title = result['snippet']['title']
+                    report = '{}\n{}'.format(video_title, video_url)
+                    await self.send_message(channel, report)
 
 client = LastBot()
 client.run(os.environ['LAST_BOT_TOKEN'])
